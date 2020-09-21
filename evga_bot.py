@@ -1,4 +1,5 @@
 #Copyright (c) 2020 Austin Simpson
+#Forked by Jarod Schneider
 
 #Permission is hereby granted, free of charge, to any person obtaining a copy
 #of this software and associated documentation files (the "Software"), to deal
@@ -20,13 +21,20 @@
 
 from selenium import webdriver
 from selenium.webdriver.support.ui import Select
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import pickle
 import time
+import os.path
+import random
+import re
 
 names_to_model = {
     "RTX 3080 FTW3 ULTRA": "10G-P5-3897-KR",
     "RTX 3080 XC3 GAMING": "10G-P5-3883-KR",
-    "RTX 3080 XC3 BLACK GAMING": "10G-P5-3881-KR",
     "RTX 3080 XC3 ULTRA GAMING": "10G-P5-3885-KR",
+    "test": "203-AD-EV01-R1",
 }
 
 login_url = "https://secure.evga.com/US/login.asp"
@@ -68,18 +76,17 @@ def get_user_info():
     #Otherwise, we assume that the user entered a part number.
     else:
         model_number = part_name_user_input
-    print ("Model number selected: {}\nYou will now need to enter payment information. This is information is stored in memory only (IE not written to a file or sent to the cloud).".format(model_number))
+    print ("Model number selected: {}".format(model_number))
     
-    print("What is the cardholder name: ")
-    cardholder_name = input()
-    print("Please enter your card number (NOT validated): ")
-    card_number = input()
-    print("Please enter your security code: ")
-    security_code = input()
-    print("Please enter your expiration month (MM): ")
-    expiration_month = input()
-    print("Please enter your expiration year (YYYY): ")
-    expiration_year = input()
+    f = open("payment.key", "r")
+    payment = f.read().splitlines()
+    f.close()
+    cardholder_name = payment[0]
+    card_number = payment[1]
+    security_code = payment[2]
+    expiration_month = payment[3]
+    expiration_year = payment[4]
+    print("\ncard loaded into memory:\n{}\n{}\n{}\n{}/{}".format(cardholder_name, card_number, security_code, expiration_month, expiration_year))
 
     return {
         "model_number": model_number,
@@ -92,72 +99,116 @@ def get_user_info():
 
 def open_browser():
     firefox_instance = webdriver.Firefox()
-    firefox_instance.get(login_url)
     return firefox_instance
 
-def add_card_to_cart(model_number, driver_instance: webdriver.Firefox):
+def add_card_to_cart(needs_refresh, model_number, driver_instance: webdriver.Firefox):
     #Default is we're out of stock. We want to refresh the page on a minute interval until we see our card become available.
     out_of_stock = True
     while out_of_stock:
-        driver_instance.get(url_template.format(model_number))
+        if needs_refresh:
+            driver_instance.get(url_template.format(model_number))
         try:
-            #We check to see if the add to cart button  is present on the page. If it isnt, the except line will get called and we conclude that the item is not in stock
-            driver_instance.find_element_by_id(add_to_cart_button_id)
-            out_of_stock = False
-        except:
-            print ("Item is still out of stock. Refreshing in one minute.")
+            #We check to see if the out of stock message is present on the page. If it isnt, the except line will get called and we conclude that the item is now in stock
+            driver_instance.find_element_by_id(out_of_stock_message_id)
+            base = 3.5
+            salt = random.random() * 0.8
+            if random.choice([True, False]):
+                salt *= -1
+            wait_time = base + salt
+            print ("Item is still out of stock. Refreshing in {} seconds.".format(wait_time))
             #Don't change this value, as we don't want to DDOS evga. Also, this could indeed backfire if you set it too low and the page can't load before the next call to refresh happens.
-            time.sleep(60)
+            needs_refresh = True
+            time.sleep(wait_time)
+        except:
+            out_of_stock = False
 
     #Once it's finally in stock, add the card to the cart.
     driver_instance.find_element_by_id(add_to_cart_button_id).click()
     print ("Item added to cart.")
 
 def checkout(web_driver: webdriver.Firefox, user_selections):
-    web_driver.get(cart_url)
-    
+    if len(web_driver.find_elements(By.ID, checkout_button_id)) == 0:
+        web_driver.get(cart_url)
     #Starts the checkout process
     web_driver.find_element_by_id(checkout_button_id).click()
 
     #Verifies and ships using default shipping info
     web_driver.execute_script("CheckShippingAddress()")
-    time.sleep(2)
+
+    e = WebDriverWait(web_driver, 100).until(EC.element_to_be_clickable((By.NAME, "rdoAddressChoice")))
+
+    # time.sleep(2)
+    web_driver.find_element_by_xpath("//input[@name='rdoAddressChoice'][@value='original']").click()
     web_driver.execute_script("ChoiceAddress()")
-    time.sleep(2)
+    e = WebDriverWait(web_driver, 100).until(EC.element_to_be_clickable((By.ID, agree_tos_checkbox_id)))
     web_driver.find_element_by_id(agree_tos_checkbox_id).click()
     web_driver.find_element_by_id(checkout_continue_button_id).click()
-    time.sleep(2)
 
     #I only support credit card purchases at this time.
-    web_driver.find_element_by_id(credit_card_radio_id).click()
-    web_driver.find_element_by_id(checkout_continue_button_id).click()
+    WebDriverWait(web_driver, 100).until(EC.element_to_be_clickable((By.ID, "ctl00_LFrame_btnApplyCoupon")))
+    cc = web_driver.find_element_by_id(credit_card_radio_id)
+    web_driver.execute_script("arguments[0].click()", cc)
+    # web_driver.find_element_by_id(credit_card_radio_id).click()
+    web_driver.execute_script("arguments[0].click()", web_driver.find_element_by_id(checkout_continue_button_id))
+    
 
     #Populate credit card info 
     web_driver.find_element_by_id(cardholder_name_input_id).send_keys(user_selections["cardholder_name"])
     web_driver.find_element_by_id(credit_card_input_id).send_keys(user_selections["card_number"])
     web_driver.find_element_by_id(cvv_input_id).send_keys(user_selections["security_code"])
+    WebDriverWait(web_driver, 100).until(EC.invisibility_of_element_located((By.CLASS_NAME, "ajax-bg")))
     Select(web_driver.find_element_by_id(expiration_month_id)).select_by_value(user_selections["expiration_month"])
     Select(web_driver.find_element_by_id(expiration_year_id)).select_by_value(user_selections["expiration_year"])
 
     #Submit and wait for card info to get validated
     web_driver.find_element_by_id(modal_checkout_continue_button_id).click()
-    time.sleep(10)
+    WebDriverWait(web_driver, 100).until(EC.element_to_be_clickable((By.ID, agree_tos_checkbox_part_two_id)))
 
     #Press final agree box
+    WebDriverWait(web_driver, 100).until(EC.invisibility_of_element_located((By.CLASS_NAME, "raDiv")))
     web_driver.find_element_by_id(agree_tos_checkbox_part_two_id).click()
-    time.sleep(2)
 
     #Complete the order
-    web_driver.find_element_by_id(checkout_continue_button_id).click()
-    print ("we believe we have placed your order. Please verify, and if this worked enjoy your new card :).")
+    WebDriverWait(web_driver, 100).until(EC.invisibility_of_element_located((By.CLASS_NAME, "raDiv")))
+    final_el = web_driver.find_element_by_xpath("/html/body/form/div[3]/div[3]/div[1]/div/div[3]/table/tbody/tr/td/div/div[3]/table/tbody/tr[7]/td[2]/div")
+    final_price = float(re.findall(r'\d+\.\d+', final_el.text)[0])
+    if final_price > 1000:
+        print("\nPRICE ABOVE $1000, PLEASE VERIFY MANUALLY\n")
+        nothing = input()
+    else:
+        web_driver.find_element_by_id(checkout_continue_button_id).click()
+    print ("bought!!!")
 
 def main():
     user_selections = get_user_info()
     firefox_instance = open_browser()
-    print ("Please log in. The author of this script didn't want to try to beat EVGA's captcha system. Once you are logged in, type literally anything into the console and press enter. Note that after this point, the entire process is automatic. DO NOT PROCEED IF YOU'RE NOT READY TO BUY THE CARD")
-    unused = input()
-    add_card_to_cart(user_selections["model_number"], firefox_instance)
-    #checkout(firefox_instance, user_selections)
+
+    f = open("evga.key", "r")
+    creds = f.read().splitlines()
+    f.close()
+
+    firefox_instance.get("https://www.evga.com")
+
+    if os.path.isfile("cookies.pkl"):
+        cookies = pickle.load(open("cookies.pkl", "rb"))
+        for cookie in cookies:
+            firefox_instance.add_cookie(cookie)
+        print("cookies loaded, refreshing\n")
+
+    firefox_instance.get(url_template.format(user_selections["model_number"]))
+
+    needs_refresh = False
+    if len(firefox_instance.find_elements(By.ID, "pnlLoginBoxLoggedOut")) > 0:
+        needs_refresh = True
+        firefox_instance.get(login_url)
+        firefox_instance.find_element_by_id("evga_login").send_keys(creds[0])
+        firefox_instance.find_element_by_name("password").send_keys(creds[1])
+        print("complete CAPTCHA and click login")
+        unused = input()
+        pickle.dump(firefox_instance.get_cookies(), open("cookies.pkl", "wb"))
+    
+    add_card_to_cart(needs_refresh, user_selections["model_number"], firefox_instance)
+    checkout(firefox_instance, user_selections)
 
 if __name__ == "__main__":
     main()
