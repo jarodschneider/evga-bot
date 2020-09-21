@@ -29,6 +29,7 @@ import time
 import os.path
 import random
 import re
+import sys, getopt
 
 names_to_model = {
     "RTX 3080 FTW3 ULTRA": "10G-P5-3897-KR",
@@ -56,6 +57,7 @@ credit_card_input_id = "ctl00_LFrame_txtCardNumber"
 expiration_month_id = "ctl00_LFrame_ddlMonth"
 expiration_year_id = "ctl00_LFrame_ddlYear"
 cvv_input_id = "ctl00_LFrame_txtCvv"
+price_id = "LFrame_spanFinalPrice"
 
 agree_tos_checkbox_part_two_id = "ctl00_LFrame_cbAgree"
 
@@ -65,6 +67,7 @@ def get_user_info():
     #Enumerate all of the possible values (friendly name) to user.
     for name in names_to_model.keys():
         print ("\t{}".format(name))
+    print("(test is a DVI-VGA adapter (used for testing on an in-stock item))")
 
     #Accept input from the user
     part_name_user_input = input()
@@ -86,7 +89,7 @@ def get_user_info():
     security_code = payment[2]
     expiration_month = payment[3]
     expiration_year = payment[4]
-    print("\ncard loaded into memory:\n{}\n{}\n{}\n{}/{}".format(cardholder_name, card_number, security_code, expiration_month, expiration_year))
+    print("\ncard loaded into memory:\n{}\n{}\n{}\n{}/{}\n".format(cardholder_name, card_number, security_code, expiration_month, expiration_year))
 
     return {
         "model_number": model_number,
@@ -101,7 +104,7 @@ def open_browser():
     firefox_instance = webdriver.Firefox()
     return firefox_instance
 
-def add_card_to_cart(needs_refresh, model_number, driver_instance: webdriver.Firefox):
+def add_card_to_cart(needs_refresh, model_number, driver_instance: webdriver.Firefox, delay, salt):
     #Default is we're out of stock. We want to refresh the page on a minute interval until we see our card become available.
     out_of_stock = True
     while out_of_stock:
@@ -109,12 +112,13 @@ def add_card_to_cart(needs_refresh, model_number, driver_instance: webdriver.Fir
             driver_instance.get(url_template.format(model_number))
         try:
             #We check to see if the out of stock message is present on the page. If it isnt, the except line will get called and we conclude that the item is now in stock
+            WebDriverWait(driver_instance, 10).until(EC.presence_of_element_located((By.ID, price_id)))
+
             driver_instance.find_element_by_id(out_of_stock_message_id)
-            base = 3.5
-            salt = random.random() * 0.8
+            salt *= random.random()
             if random.choice([True, False]):
                 salt *= -1
-            wait_time = base + salt
+            wait_time = delay + salt
             print ("Item is still out of stock. Refreshing in {} seconds.".format(wait_time))
             #Don't change this value, as we don't want to DDOS evga. Also, this could indeed backfire if you set it too low and the page can't load before the next call to refresh happens.
             needs_refresh = True
@@ -123,10 +127,13 @@ def add_card_to_cart(needs_refresh, model_number, driver_instance: webdriver.Fir
             out_of_stock = False
 
     #Once it's finally in stock, add the card to the cart.
+    print("\nIN STOCK, ADDING TO CART")
+    WebDriverWait(driver_instance, 10).until(EC.element_to_be_clickable((By.ID, add_to_cart_button_id)))
+
     driver_instance.find_element_by_id(add_to_cart_button_id).click()
     print ("Item added to cart.")
 
-def checkout(web_driver: webdriver.Firefox, user_selections):
+def checkout(web_driver: webdriver.Firefox, user_selections, is_active):
     if len(web_driver.find_elements(By.ID, checkout_button_id)) == 0:
         web_driver.get(cart_url)
     #Starts the checkout process
@@ -176,10 +183,33 @@ def checkout(web_driver: webdriver.Firefox, user_selections):
         print("\nPRICE ABOVE $1000, PLEASE VERIFY MANUALLY\n")
         nothing = input()
     else:
-        web_driver.find_element_by_id(checkout_continue_button_id).click()
-    print ("bought!!!")
+        if is_active:
+            web_driver.find_element_by_id(checkout_continue_button_id).click()
+            print ("BUY ATTEMPTED!")
+        else:
+            print("TEST MODE: buy not completed. Feel free to complete the order manually or terminate the program")
 
-def main():
+def main(argv):
+    delay = 3.0
+    salt = 0.8
+    is_active = True
+    try:
+        opts, args = getopt.getopt(argv, "d:s:th")
+    except getopt.GetoptError:
+        print('evga_bot.py -d <delay> -s <delay_salt>')
+    for opt, arg in opts:
+        if opt == '-h':
+            print('evga_bot.py [args]\n    -t, --test: test mode (will not click final Place Order button)\n    -d: delay (sec) between product page refreshes (default: 3.0)\n    -s: time (sec) to randomly fluctuate delay +/-[0, x) (default: 0.8)')
+            exit(2)
+        elif opt == '-d':
+            delay = arg
+        elif opt == '-s':
+            salt = arg
+        elif opt in ('-t', '--test'):
+            is_active = False
+            print("\nTEST MODE: WILL NOT BUY\n")
+        else:
+            print("\nWARNING: ACTIVE MODE, WILL BUY\n")
     user_selections = get_user_info()
     firefox_instance = open_browser()
 
@@ -199,16 +229,19 @@ def main():
 
     needs_refresh = False
     if len(firefox_instance.find_elements(By.ID, "pnlLoginBoxLoggedOut")) > 0:
+        print("logging in\n")
         needs_refresh = True
         firefox_instance.get(login_url)
         firefox_instance.find_element_by_id("evga_login").send_keys(creds[0])
         firefox_instance.find_element_by_name("password").send_keys(creds[1])
-        print("complete CAPTCHA and click login")
+        print("complete CAPTCHA and click login, then press any key followed by Enter/Return\n")
         unused = input()
         pickle.dump(firefox_instance.get_cookies(), open("cookies.pkl", "wb"))
+    else:
+        print("cookies provided logged in state, proceeding to product page\n")
     
     add_card_to_cart(needs_refresh, user_selections["model_number"], firefox_instance)
-    checkout(firefox_instance, user_selections)
+    checkout(firefox_instance, user_selections, is_active)
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
