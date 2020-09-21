@@ -101,13 +101,13 @@ def add_card_to_cart(model_number, driver_instance: webdriver.Firefox):
     while out_of_stock:
         driver_instance.get(url_template.format(model_number))
         try:
-            #We check to see if the out of stock message is present on the page. If it isnt, the except line will get called and we conclude that the item is now in stock
-            driver_instance.find_element_by_id(out_of_stock_message_id)
+            #We check to see if the add to cart button  is present on the page. If it isnt, the except line will get called and we conclude that the item is not in stock
+            driver_instance.find_element_by_id(add_to_cart_button_id)
+            out_of_stock = False
+        except:
             print ("Item is still out of stock. Refreshing in one minute.")
             #Don't change this value, as we don't want to DDOS evga. Also, this could indeed backfire if you set it too low and the page can't load before the next call to refresh happens.
             time.sleep(60)
-        except:
-            out_of_stock = False
 
     #Once it's finally in stock, add the card to the cart.
     driver_instance.find_element_by_id(add_to_cart_button_id).click()
@@ -157,7 +157,7 @@ def main():
     print ("Please log in. The author of this script didn't want to try to beat EVGA's captcha system. Once you are logged in, type literally anything into the console and press enter. Note that after this point, the entire process is automatic. DO NOT PROCEED IF YOU'RE NOT READY TO BUY THE CARD")
     unused = input()
     add_card_to_cart(user_selections["model_number"], firefox_instance)
-    checkout(firefox_instance, user_selections)
+    #checkout(firefox_instance, user_selections)
 
 if __name__ == "__main__":
     main()
