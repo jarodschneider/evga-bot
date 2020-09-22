@@ -33,6 +33,7 @@ import sys, getopt
 
 names_to_model = {
     "RTX 3080 FTW3 ULTRA": "10G-P5-3897-KR",
+    "RTX 3080 FTW3 GAMING": "10G-P5-3895-KR",
     "RTX 3080 XC3 GAMING": "10G-P5-3883-KR",
     "RTX 3080 XC3 ULTRA GAMING": "10G-P5-3885-KR",
     "test": "203-AD-EV01-R1",
@@ -106,29 +107,27 @@ def open_browser():
     firefox_instance = webdriver.Firefox()
     return firefox_instance
 
-def add_card_to_cart(needs_refresh, model_number, driver_instance: webdriver.Firefox, delay, salt):
+def add_card_to_cart(needs_refresh, model_number, driver_instance: webdriver.Firefox, delay, salt_in):
     #Default is we're out of stock. We want to refresh the page on a minute interval until we see our card become available.
     out_of_stock = True
     while out_of_stock:
         if needs_refresh:
             driver_instance.get(url_template.format(model_number))
         try:
-            #We check to see if the out of stock message is present on the page. If it isnt, the except line will get called and we conclude that the item is now in stock
             WebDriverWait(driver_instance, 10).until(EC.presence_of_element_located((By.ID, price_id)))
 
             driver_instance.find_element_by_id(out_of_stock_message_id)
-            salt *= random.random()
+
+            salt = random.random() * salt_in
             if random.choice([True, False]):
                 salt *= -1
             wait_time = delay + salt
             print ("Item is still out of stock. Refreshing in {} seconds.".format(wait_time))
-            #Don't change this value, as we don't want to DDOS evga. Also, this could indeed backfire if you set it too low and the page can't load before the next call to refresh happens.
             needs_refresh = True
             time.sleep(wait_time)
         except:
             out_of_stock = False
 
-    #Once it's finally in stock, add the card to the cart.
     print("\nIN STOCK, ADDING TO CART")
     WebDriverWait(driver_instance, 10).until(EC.element_to_be_clickable((By.ID, add_to_cart_button_id)))
 
@@ -138,19 +137,17 @@ def add_card_to_cart(needs_refresh, model_number, driver_instance: webdriver.Fir
 def checkout(web_driver: webdriver.Firefox, user_selections, is_active, is_amex):
     if len(web_driver.find_elements(By.ID, checkout_button_id)) == 0:
         web_driver.get(cart_url)
-    #Starts the checkout process
-    # web_driver.find_element_by_id(checkout_button_id).click()
+
     web_driver.get(payment_url)
 
-    #I only support credit card purchases at this time.
     WebDriverWait(web_driver, 100).until(EC.element_to_be_clickable((By.ID, "ctl00_LFrame_btnApplyCoupon")))
     cc = web_driver.find_element_by_id(credit_card_radio_id)
     web_driver.execute_script("arguments[0].click()", cc)
-    # web_driver.find_element_by_id(credit_card_radio_id).click()
     web_driver.execute_script("arguments[0].click()", web_driver.find_element_by_id(checkout_continue_button_id))
     
 
-    #Populate credit card info 
+    #Populate credit card info
+    WebDriverWait(web_driver, 100).until(EC.visibility_of_element_located((By.ID, cardholder_name_input_id)))
     web_driver.find_element_by_id(cardholder_name_input_id).send_keys(user_selections["cardholder_name"])
     web_driver.find_element_by_id(credit_card_input_id).send_keys(user_selections["card_number"])
     web_driver.find_element_by_id(cvv_input_id).send_keys(user_selections["security_code"])
@@ -170,7 +167,10 @@ def checkout(web_driver: webdriver.Firefox, user_selections, is_active, is_amex)
         web_driver.switch_to.frame(if2)
         safekey = WebDriverWait(web_driver, 10).until(EC.presence_of_element_located((By.ID, amex_safekey_id)))
         print("\ndismissing SafeKey\n")
-        web_driver.execute_script("continueWithoutPoints()", safekey)
+        try:
+            web_driver.execute_script("continueWithoutPoints()", safekey)
+        except:
+            print("failed to dismiss, awaiting auto dismiss")
         web_driver.switch_to.default_content()
 
     WebDriverWait(web_driver, 100).until(EC.element_to_be_clickable((By.ID, agree_tos_checkbox_part_two_id)))
@@ -195,10 +195,11 @@ def checkout(web_driver: webdriver.Firefox, user_selections, is_active, is_amex)
             print("TEST MODE: buy NOT completed. Feel free to complete the order manually or terminate the program")
 
 def main(argv):
-    delay = 3.0
+    delay = 1.75
     salt = 0.8
     is_active = True
     is_amex = False
+    
     try:
         opts, args = getopt.getopt(argv, "d:s:th", ["amex", "test"])
     except getopt.GetoptError:
@@ -216,9 +217,14 @@ def main(argv):
             print("\nTEST MODE: WILL NOT BUY\n")
         elif opt == '--amex':
             is_amex = True
-            print("\nrunning with SafeKey dismiss\n")
 
     user_selections = get_user_info()
+    if user_selections['card_number'][0:2] == '37' or user_selections['card_number'][0:2] == '34':
+        is_amex = True
+    
+    if is_amex:
+        print("\nrunning with SafeKey dismiss\n")
+
     firefox_instance = open_browser()
 
     f = open("evga.key", "r")
@@ -236,7 +242,7 @@ def main(argv):
     firefox_instance.get(url_template.format(user_selections["model_number"]))
 
     needs_refresh = False
-    if len(firefox_instance.find_elements(By.ID, "pnlLoginBoxLoggedOut")) > 0:
+    if len(firefox_instance.find_elements_by_id("svg-login")) > 0:
         print("logging in\n")
         needs_refresh = True
         firefox_instance.get(login_url)
