@@ -41,6 +41,7 @@ names_to_model = {
 login_url = "https://secure.evga.com/US/login.asp"
 url_template = "https://www.evga.com/products/product.aspx?pn={}"
 cart_url = "https://www.evga.com/products/ShoppingCart.aspx"
+payment_url = "https://secure.evga.com/Cart/Checkout_Payment.aspx"
 
 out_of_stock_message_id = "LFrame_pnlOutOfStock"
 add_to_cart_button_id = "LFrame_btnAddToCart"
@@ -58,6 +59,7 @@ expiration_month_id = "ctl00_LFrame_ddlMonth"
 expiration_year_id = "ctl00_LFrame_ddlYear"
 cvv_input_id = "ctl00_LFrame_txtCvv"
 price_id = "LFrame_spanFinalPrice"
+amex_safekey_id = "safeKeyExpress6"
 
 agree_tos_checkbox_part_two_id = "ctl00_LFrame_cbAgree"
 
@@ -133,23 +135,12 @@ def add_card_to_cart(needs_refresh, model_number, driver_instance: webdriver.Fir
     driver_instance.find_element_by_id(add_to_cart_button_id).click()
     print ("Item added to cart.")
 
-def checkout(web_driver: webdriver.Firefox, user_selections, is_active):
+def checkout(web_driver: webdriver.Firefox, user_selections, is_active, is_amex):
     if len(web_driver.find_elements(By.ID, checkout_button_id)) == 0:
         web_driver.get(cart_url)
     #Starts the checkout process
-    web_driver.find_element_by_id(checkout_button_id).click()
-
-    #Verifies and ships using default shipping info
-    web_driver.execute_script("CheckShippingAddress()")
-
-    e = WebDriverWait(web_driver, 100).until(EC.element_to_be_clickable((By.NAME, "rdoAddressChoice")))
-
-    # time.sleep(2)
-    web_driver.find_element_by_xpath("//input[@name='rdoAddressChoice'][@value='original']").click()
-    web_driver.execute_script("ChoiceAddress()")
-    e = WebDriverWait(web_driver, 100).until(EC.element_to_be_clickable((By.ID, agree_tos_checkbox_id)))
-    web_driver.find_element_by_id(agree_tos_checkbox_id).click()
-    web_driver.find_element_by_id(checkout_continue_button_id).click()
+    # web_driver.find_element_by_id(checkout_button_id).click()
+    web_driver.get(payment_url)
 
     #I only support credit card purchases at this time.
     WebDriverWait(web_driver, 100).until(EC.element_to_be_clickable((By.ID, "ctl00_LFrame_btnApplyCoupon")))
@@ -169,6 +160,19 @@ def checkout(web_driver: webdriver.Firefox, user_selections, is_active):
 
     #Submit and wait for card info to get validated
     web_driver.find_element_by_id(modal_checkout_continue_button_id).click()
+
+    if is_amex:
+        # wait for safekey
+        safekey = None
+        if1 = WebDriverWait(web_driver, 10).until(EC.presence_of_element_located((By.ID, "Cardinal-CCA-IFrame")))
+        web_driver.switch_to.frame(if1)
+        if2 = WebDriverWait(web_driver, 10).until(EC.presence_of_element_located((By.ID, "authWindow")))
+        web_driver.switch_to.frame(if2)
+        safekey = WebDriverWait(web_driver, 10).until(EC.presence_of_element_located((By.ID, amex_safekey_id)))
+        print("\ndismissing SafeKey\n")
+        web_driver.execute_script("continueWithoutPoints()", safekey)
+        web_driver.switch_to.default_content()
+
     WebDriverWait(web_driver, 100).until(EC.element_to_be_clickable((By.ID, agree_tos_checkbox_part_two_id)))
 
     #Press final agree box
@@ -183,23 +187,25 @@ def checkout(web_driver: webdriver.Firefox, user_selections, is_active):
         print("\nPRICE ABOVE $1000, PLEASE VERIFY MANUALLY\n")
         nothing = input()
     else:
+        buy = WebDriverWait(web_driver, 100).until(EC.element_to_be_clickable((By.ID, checkout_continue_button_id)))
         if is_active:
-            web_driver.find_element_by_id(checkout_continue_button_id).click()
+            buy.click()  # actually buy the thing
             print ("BUY ATTEMPTED!")
         else:
-            print("TEST MODE: buy not completed. Feel free to complete the order manually or terminate the program")
+            print("TEST MODE: buy NOT completed. Feel free to complete the order manually or terminate the program")
 
 def main(argv):
     delay = 3.0
     salt = 0.8
     is_active = True
+    is_amex = False
     try:
-        opts, args = getopt.getopt(argv, "d:s:th")
+        opts, args = getopt.getopt(argv, "d:s:th", ["amex", "test"])
     except getopt.GetoptError:
         print('evga_bot.py -d <delay> -s <delay_salt>')
     for opt, arg in opts:
         if opt == '-h':
-            print('evga_bot.py [args]\n    -t, --test: test mode (will not click final Place Order button)\n    -d: delay (sec) between product page refreshes (default: 3.0)\n    -s: time (sec) to randomly fluctuate delay +/-[0, x) (default: 0.8)')
+            print('evga_bot.py [args]\n    -t, --test: test mode (will not click final Place Order button)\n    -d: delay (sec) between product page refreshes (default: 3.0)\n    -s: time (sec) to randomly fluctuate delay +/-[0, x) (default: 0.8)\n    --amex: AMEX mode for dismissing SafeKey')
             exit(2)
         elif opt == '-d':
             delay = arg
@@ -208,8 +214,10 @@ def main(argv):
         elif opt in ('-t', '--test'):
             is_active = False
             print("\nTEST MODE: WILL NOT BUY\n")
-        else:
-            print("\nWARNING: ACTIVE MODE, WILL BUY\n")
+        elif opt == '--amex':
+            is_amex = True
+            print("\nrunning with SafeKey dismiss\n")
+
     user_selections = get_user_info()
     firefox_instance = open_browser()
 
@@ -240,8 +248,8 @@ def main(argv):
     else:
         print("cookies provided logged in state, proceeding to product page\n")
     
-    add_card_to_cart(needs_refresh, user_selections["model_number"], firefox_instance)
-    checkout(firefox_instance, user_selections, is_active)
+    add_card_to_cart(needs_refresh, user_selections["model_number"], firefox_instance, delay, salt)
+    checkout(firefox_instance, user_selections, is_active, is_amex)
 
 if __name__ == "__main__":
     main(sys.argv[1:])
